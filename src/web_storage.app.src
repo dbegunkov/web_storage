@@ -1,0 +1,12 @@
+{application, web_storage,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { web_storage_app, []}},
+  {env, []}
+ ]}.
