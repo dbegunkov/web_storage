@@ -16,6 +16,7 @@
          terminate/2, code_change/3]).
 
 -record(state, {ref :: reference()}).
+-define(CLEAN_TIMEOUT, 60000).
 %% ------------------------------------------------------------------
 %% API Function Definitions
 %% ------------------------------------------------------------------
@@ -29,6 +30,7 @@ start_link() ->
 
 init(_Args) ->
     self() ! init_dets,
+    erlang:send_after(?CLEAN_TIMEOUT, self(), clean),
     lager:debug("I'm start ~p",[self()]),
     {ok, #state{ref = undefined}}.
 
@@ -50,10 +52,19 @@ handle_info(init_dets, State) ->
                            undefined
     end,
     {noreply, State#state{ref = NewRef}};
+handle_info(clean, #state{ref = Ref} =  State) when Ref == undefined ->
+    {noreply, State};
+handle_info(clean, #state{ref = Ref} =  State)  ->
+    clean_tab(Ref),
+    erlang:send_after(?CLEAN_TIMEOUT, self(), clean),
+    {noreply, State};
 handle_info(Info, State) ->
     lager:error("Error info ~p",[Info]),
     {noreply, State}.
 
+terminate(_Reason, #state{ref = Ref}) when Ref =/= undefined ->
+    dets:close(Ref),
+    ok;
 terminate(_Reason, _State) ->
     ok.
 
@@ -64,10 +75,32 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal Function Definitions
 %% ------------------------------------------------------------------
 
+clean_tab(Ref) ->
+    remove_old(dets:first(Ref), Ref).
+
+remove_old('$end_of_table', _Ref) ->
+    ok;
+remove_old(DKey, Ref) ->
+    case dets:lookup(Ref, DKey) of
+        {error, Reason} ->
+            lager:debug("Erorr lookup dets ~p",[Reason]);
+        [] ->
+            ok;
+        [Data] ->
+            {Key, {Value, TTL}} = Data,
+            case check_ttl(Value, TTL) of
+                {ok, _} -> ok;
+                {error, _} ->
+                    lager:debug("deleted old record ~p",[Key]),
+                    dets:delete(Ref, Key)
+            end
+    end,
+    remove_old(dets:next(Ref, DKey), Ref).
 
 put_value(Key, Value, TTL, Ref) ->
-    case dets:insert(Ref, {Key, {Value, TTL}}) of
-        {error, Reason} -> lager:error("error insert data ~p",[Reason]);
+    case dets:insert(Ref, {Key, {Value, get_time(TTL)}}) of
+        {error, Reason} -> lager:error("error insert data ~p",[Reason]),
+                           {error, <<"Error">>};
         ok -> {ok, <<"OK">>}
     end.
 
@@ -75,10 +108,29 @@ get_value(Key, Ref) ->
     case dets:lookup(Ref, Key) of
         {error, Reason} ->
             lager:error("error lookup ~p",[Reason]),
-            {error, Reason};
+            {error, <<"Unknown error">>};
         [] ->
-            {error, empty};
+            {error, <<"Empty">>};
         [Data] ->
-            {Key, {Value, _TTL}} = Data,
-            {ok, Value}
+            {Key, {Value, TTL}} = Data,
+            check_ttl(Value, TTL)
     end.
+
+check_ttl(Value, undefined) ->
+    {ok, Value};
+check_ttl(Value, TTL) ->
+    case int_timestamp() of
+        Now when Now > TTL ->
+            {error, <<"Outdated">>};
+        _  -> {ok, Value}
+    end.
+
+get_time(undefined) ->
+    undefined;
+get_time(TTL) when is_binary(TTL)->
+    int_timestamp() + binary_to_integer(TTL).
+
+int_timestamp() ->
+    {Mega, Secs, _Micro} = os:timestamp(),
+    Res = Mega * 1000 * 1000 + Secs,
+    Res.

@@ -28,7 +28,6 @@ parse_request(Method, _Key, _Value, _TTL, Req) when Method /= <<"/put">>, Method
 	cowboy_req:reply(400, [], <<"Error method.">>, Req);
 parse_request(Method, Key, Value, TTL, Req)  ->
     Repl = gen_server:call(web_storage_wrk, {Method, Key, Value, TTL}, ?TIMEOUT),
-    %% lager:debug("Repl ~p",[Repl]),
     {Code, Data} = catch_reply(Repl),
     %% lager:debug("repl Req ~p",[Req]),
 	cowboy_req:reply(Code, [], Data, Req).
@@ -41,5 +40,7 @@ terminate(_Reason, _Req, _State) ->
 
 catch_reply({ok, Data}) ->
         {200, Data};
+catch_reply({error, Reason}) when is_binary(Reason) ->
+        {400, Reason};
 catch_reply({error, _Reason}) ->
         {400, <<"error operation">>}.
