@@ -34,10 +34,20 @@ init(_Args) ->
     lager:debug("I'm start ~p",[self()]),
     {ok, #state{ref = undefined}}.
 
-handle_call({<<"/put">>, Key, Value, TTL}, _From, #state{ref = Ref} = State) ->
-    {reply, put_value(Key, Value, TTL, Ref), State};
-handle_call({<<"/get">>, Key, _, _}, _From, #state{ref = Ref} = State) ->
-    {reply, get_value(Key, Ref), State};
+handle_call({<<"/put">>, ListData}, _From, #state{ref = Ref} = State) ->
+    Res = try put_values(ListData, Ref) of
+              Data -> Data
+          catch
+              _:Error -> {error, Error}
+          end,
+        {reply, {ok, Res}, State};
+handle_call({<<"/get">>, ListData}, _From, #state{ref = Ref} = State) ->
+    Res = try get_values(ListData, Ref, []) of
+              Data -> Data
+          catch
+              _:Error -> {error, Error}
+          end,
+        {reply, {ok, Res}, State};
 handle_call(Request, _From, State) ->
     lager:errort("Error call ~p",[Request]),
     {reply, ok, State}.
@@ -97,18 +107,34 @@ remove_old(DKey, Ref) ->
     end,
     remove_old(dets:next(Ref, DKey), Ref).
 
+put_values([], _Ref) -> <<"ok">>;
+put_values([{key, Key}, {value, Value}, {ttl, TTL}| T], Ref) ->
+     ok = put_value(Key,Value, TTL, Ref),
+     put_values(T, Ref).
+
 put_value(Key, Value, TTL, Ref) ->
     case dets:insert(Ref, {Key, {Value, get_time(TTL)}}) of
         {error, Reason} -> lager:error("error insert data ~p",[Reason]),
-                           {error, <<"Error">>};
-        ok -> {ok, <<"OK">>}
+                           throw(<<"Error">>);
+        ok -> ok
     end.
+
+get_values([], _Ref, Acc) ->
+    Acc;
+get_values([{key, Key} | T], Ref, Acc) ->
+    SubTotal = case get_value(Key, Ref) of
+        {ok, Value} ->
+                       <<Key/binary,"=",Value/binary,13,10>>;
+        {error, Error} when Error == <<"Empty">>; Error == <<"Outdated">> ->
+                       <<Key/binary,"=error, reason="/utf8,Error/binary>>
+                           end,
+    get_values(T, Ref, Acc ++[SubTotal]).
 
 get_value(Key, Ref) ->
     case dets:lookup(Ref, Key) of
         {error, Reason} ->
             lager:error("error lookup ~p",[Reason]),
-            {error, <<"Unknown error">>};
+            throw(<<"Unknown error">>);
         [] ->
             {error, <<"Empty">>};
         [Data] ->
